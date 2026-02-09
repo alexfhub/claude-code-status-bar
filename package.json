@@ -1,0 +1,53 @@
+{
+  "name": "claude-code-statusbar",
+  "displayName": "Claude Code Status Bar",
+  "description": "Displays Claude Code usage statistics in the status bar",
+  "version": "0.1.0",
+  "publisher": "alexfhub",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexfhub/claude-code-status-bar"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "icon": "claudestatusbar_logo.png",
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeCodeStatusBar.refresh",
+        "title": "Claude Code: Refresh Usage"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Code Status Bar",
+      "properties": {
+        "claudeCodeStatusBar.refreshIntervalSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "description": "How often to refresh usage data (in seconds)"
+        },
+        "claudeCodeStatusBar.currencySymbol": {
+          "type": "string",
+          "default": "",
+          "description": "Currency symbol for extra usage display (e.g. €, $, £). Leave empty to auto-detect from locale."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
