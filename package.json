@@ -1,8 +1,8 @@
 {
   "name": "claude-code-statusbar",
-  "displayName": "Claude Code Status Bar",
+  "displayName": "Claude Code Usage",
   "description": "Displays Claude Code usage statistics in the status bar",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "alexfhub",
   "repository": {
     "type": "git",

@@ -1,4 +1,4 @@
-# Claude Code Status Bar
+# Claude Code Usage
 
 Cursor extension that displays your Claude Code plan usage limits directly in the status bar.
 
