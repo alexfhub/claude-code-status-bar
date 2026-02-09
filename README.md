@@ -48,3 +48,7 @@ Install the Claude Code extension in Cursor and sign in to it. The Claude Code S
 | `claudeCodeStatusBar.currencySymbol` | `""` (auto) | Currency symbol for extra usage (e.g. `€`, `$`, `£`). Empty = auto-detect from editor locale |
 
 At the moment, the Claude API does not provide information about the billing plan currency, so the currency can be set manually in the extension settings. This setting does not affect anything except the currency shown in the tooltip for the Extra Usage item.
+
+## Support me
+
+If you like the extension, feel free to buy me a coffee via the link https://ko-fi.com/alexxxf
