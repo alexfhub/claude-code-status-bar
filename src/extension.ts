@@ -1,8 +1,14 @@
 import * as vscode from "vscode";
-import { fetchUsageData, UsageData } from "./api";
+import { fetchUsageData, RateLimitError, UsageData } from "./api";
 
 let statusBarItem: vscode.StatusBarItem;
-let refreshTimer: ReturnType<typeof setInterval> | undefined;
+let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+let lastData: UsageData | undefined;
+let lastFetchedAt: number | undefined;
+let rateLimitedUntil = 0;
+let consecutiveFailures = 0;
+// Manual refresh click should force a retry even if we're in backoff.
+let forceNextRefresh = false;
 
 export function activate(context: vscode.ExtensionContext) {
   statusBarItem = vscode.window.createStatusBarItem(
@@ -16,29 +22,37 @@ export function activate(context: vscode.ExtensionContext) {
 
   const refreshCommand = vscode.commands.registerCommand(
     "claudeCodeStatusBar.refresh",
-    () => updateStatusBar()
+    () => {
+      forceNextRefresh = true;
+      scheduleNext(0);
+    }
   );
   context.subscriptions.push(refreshCommand);
 
-  updateStatusBar();
-  startRefreshTimer();
+  scheduleNext(0);
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("claudeCodeStatusBar")) {
-        startRefreshTimer();
+        scheduleNext(getIntervalMs());
       }
     })
   );
 }
 
-function startRefreshTimer() {
-  if (refreshTimer) {
-    clearInterval(refreshTimer);
-  }
+function getIntervalMs(): number {
   const config = vscode.workspace.getConfiguration("claudeCodeStatusBar");
   const intervalSec = config.get<number>("refreshIntervalSeconds", 60);
-  refreshTimer = setInterval(() => updateStatusBar(), intervalSec * 1000);
+  return intervalSec * 1000;
+}
+
+function scheduleNext(delayMs: number) {
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+  }
+  refreshTimer = setTimeout(() => {
+    void updateStatusBar();
+  }, Math.max(0, delayMs));
 }
 
 function getCurrencySymbol(): string {
@@ -60,19 +74,95 @@ function getCurrencySymbol(): string {
 }
 
 async function updateStatusBar() {
+  const now = Date.now();
+  const forced = forceNextRefresh;
+  forceNextRefresh = false;
+
+  // Respect rate-limit backoff unless the user manually clicked refresh.
+  if (!forced && now < rateLimitedUntil) {
+    renderBackoff(rateLimitedUntil - now);
+    scheduleNext(rateLimitedUntil - now);
+    return;
+  }
+
   try {
     const data = await fetchUsageData();
     if (!data) {
       statusBarItem.text = "$(cloud) Claude: no auth";
       statusBarItem.tooltip =
         "Could not read Claude Code credentials from Keychain";
+      statusBarItem.backgroundColor = undefined;
+      scheduleNext(getIntervalMs());
       return;
     }
+    lastData = data;
+    lastFetchedAt = Date.now();
+    rateLimitedUntil = 0;
+    consecutiveFailures = 0;
     renderStatusBar(data);
+    scheduleNext(getIntervalMs());
   } catch (err: any) {
-    statusBarItem.text = "$(cloud) Claude: error";
-    statusBarItem.tooltip = `Error: ${err.message}`;
+    consecutiveFailures += 1;
+    if (err instanceof RateLimitError) {
+      // Honour Retry-After and add jitter.
+      const jitter = Math.floor(Math.random() * 5000);
+      rateLimitedUntil = Date.now() + err.retryAfterMs + jitter;
+      renderBackoff(err.retryAfterMs + jitter);
+      scheduleNext(err.retryAfterMs + jitter);
+      return;
+    }
+    // Non-429 errors: exponential backoff capped at 5 minutes, preserving
+    // the last successful data in the status bar so it doesn't flash "error".
+    const backoff = Math.min(
+      getIntervalMs() * Math.pow(2, consecutiveFailures - 1),
+      5 * 60 * 1000
+    );
+    renderError(err?.message ?? String(err));
+    scheduleNext(backoff);
   }
+}
+
+function renderBackoff(remainingMs: number) {
+  const secs = Math.ceil(remainingMs / 1000);
+  if (lastData) {
+    renderStatusBar(lastData);
+    const existing = statusBarItem.tooltip?.toString() ?? "";
+    statusBarItem.tooltip =
+      `${existing}\n\n⚠ Rate limited — retrying in ${secs}s` +
+      (lastFetchedAt
+        ? ` (data from ${formatAge(Date.now() - lastFetchedAt)} ago)`
+        : "");
+  } else {
+    statusBarItem.text = "$(cloud) Claude: rate limited";
+    statusBarItem.tooltip = `API rate limited (429). Retrying in ${secs}s.\nClick to retry now.`;
+    statusBarItem.backgroundColor = new vscode.ThemeColor(
+      "statusBarItem.warningBackground"
+    );
+  }
+}
+
+function renderError(message: string) {
+  if (lastData) {
+    renderStatusBar(lastData);
+    const existing = statusBarItem.tooltip?.toString() ?? "";
+    statusBarItem.tooltip =
+      `${existing}\n\n⚠ Refresh failed: ${message}` +
+      (lastFetchedAt
+        ? ` (data from ${formatAge(Date.now() - lastFetchedAt)} ago)`
+        : "");
+  } else {
+    statusBarItem.text = "$(cloud) Claude: error";
+    statusBarItem.tooltip = `Error: ${message}\nClick to retry.`;
+  }
+}
+
+function formatAge(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.round(m / 60);
+  return `${h}h`;
 }
 
 function renderStatusBar(data: UsageData) {
@@ -140,6 +230,6 @@ function formatReset(iso: string): string {
 
 export function deactivate() {
   if (refreshTimer) {
-    clearInterval(refreshTimer);
+    clearTimeout(refreshTimer);
   }
 }

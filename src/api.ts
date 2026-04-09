@@ -110,25 +110,39 @@ function authHeaders(token: string): Record<string, string> {
   };
 }
 
+export class RateLimitError extends Error {
+  constructor(public readonly retryAfterMs: number) {
+    super(`API returned 429 (retry in ${Math.ceil(retryAfterMs / 1000)}s)`);
+    this.name = "RateLimitError";
+  }
+}
+
+// Profile data rarely changes — cache it per access token so we don't
+// hammer the profile endpoint on every refresh tick.
+let cachedPlanName: { token: string; planName: string } | undefined;
+
 export async function fetchUsageData(): Promise<UsageData | null> {
   const creds = await getClaudeCredentials();
   if (!creds) return null;
 
   const headers = authHeaders(creds.accessToken);
 
-  const [usageBody, profileBody] = await Promise.all([
-    httpGet(`${BASE_URL}${USAGE_PATH}`, headers),
-    httpGet(`${BASE_URL}${PROFILE_PATH}`, headers).catch(() => null),
-  ]);
-
+  const usageBody = await httpGet(`${BASE_URL}${USAGE_PATH}`, headers);
   const raw: RawUsageResponse = JSON.parse(usageBody);
   const data = transformResponse(raw);
 
-  if (profileBody) {
+  if (cachedPlanName && cachedPlanName.token === creds.accessToken) {
+    data.planName = cachedPlanName.planName;
+  } else {
     try {
+      const profileBody = await httpGet(`${BASE_URL}${PROFILE_PATH}`, headers);
       const profile: RawProfileResponse = JSON.parse(profileBody);
-      data.planName = formatPlanName(profile);
-    } catch { /* ignore */ }
+      const planName = formatPlanName(profile);
+      data.planName = planName;
+      cachedPlanName = { token: creds.accessToken, planName };
+    } catch {
+      /* profile is best-effort — don't fail the whole refresh */
+    }
   }
 
   return data;
@@ -140,9 +154,17 @@ function httpGet(
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers, timeout: 5000 }, (res) => {
-      if (res.statusCode !== 200) {
+      const status = res.statusCode ?? 0;
+      if (status === 429) {
+        const retryAfter = res.headers["retry-after"];
+        const retryAfterMs = parseRetryAfter(retryAfter);
         res.resume();
-        reject(new Error(`API returned ${res.statusCode}`));
+        reject(new RateLimitError(retryAfterMs));
+        return;
+      }
+      if (status !== 200) {
+        res.resume();
+        reject(new Error(`API returned ${status}`));
         return;
       }
       const chunks: Buffer[] = [];
@@ -155,4 +177,16 @@ function httpGet(
       reject(new Error("Request timed out"));
     });
   });
+}
+
+function parseRetryAfter(header: string | string[] | undefined): number {
+  const value = Array.isArray(header) ? header[0] : header;
+  if (!value) return 60_000;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+  const dateMs = Date.parse(value);
+  if (!Number.isNaN(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+  return 60_000;
 }
